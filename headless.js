@@ -56,7 +56,7 @@ async function excute(account) {
 
   try {
     const browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
       userDataDir,
       executablePath,
       args: [
@@ -108,7 +108,7 @@ async function excute(account) {
     // Remove process
     browser.on('disconnected', async () => {
       console.log('Browser disconnected!');
-
+s
       manualClearInterval();
 
       await Account.update({ context_id: null, status: 0 }, { id: account.id });
@@ -150,7 +150,6 @@ async function excute(account) {
         console.log(`IDE [${account.id}] is offline - Reloading...`);
 
         await page.reload();
-        
         await page.waitForNavigation({ timeout: 0 });
 
         await login();
