@@ -4,27 +4,40 @@ import puppeteer from 'puppeteer';
 import fs from 'fs';
 import path from 'path';
 import Account from './db/account.js';
+import UserAgent from 'user-agents';
 
 const app = express();
 
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-process.setMaxListeners(1000);
+process.setMaxListeners(3000);
 
-const port = 5000;
+const port = 9000;
 const viewPath = `${process.cwd()}/views/`;
 const browsers = {};
-// const executablePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const executablePath = "/usr/bin/google-chrome-stable";
+const getExecutablePath = () => {
+  if (process.platform === 'linux') {
+    return "/usr/bin/google-chrome-stable";
+  } else if (process.platform === 'darwin') {
+    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  } else {
+    return null;
+  }
+}
 
 // Helper
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getRandomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
 async function excute(account) {
   const userDataDir = path.join(`${process.cwd()}/browser/`, `profile_${account.id}`);
+  const timer = getRandomInt(60 * 60 * 1000, 2 * 60 * 60 * 1000);
 
   if (!fs.existsSync(userDataDir)) {
     fs.mkdirSync(userDataDir);
@@ -57,8 +70,9 @@ async function excute(account) {
   try {
     const browser = await puppeteer.launch({
       headless: true,
+      protocolTimeout: 360000,
       userDataDir,
-      executablePath,
+      executablePath: getExecutablePath(),
       args: [
         '--disable-gpu',
         '--disable-infobars',
@@ -104,99 +118,115 @@ async function excute(account) {
   
     // Create page
     const page = await browser.newPage();
+
+    // Set Argent
+    const userAgent = new UserAgent({ deviceCategory: 'desktop' });
+    const randomUserAgent = userAgent.toString();
+    await page.setUserAgent(randomUserAgent);
   
+    // Implement your login logic based on the structure of the login page
+    const login = async (page) => {
+      await delay(30000);
+
+      const isLogin = await page.evaluate(() => document.querySelectorAll('input[name="name"]').length, { timeout: 60000 });
+
+      if (isLogin > 0) {
+        await page.type('input[name="name"]', account.email);
+        await page.type('input[name="pass"]', account.password);
+        await page.click('button#edit-submit');
+        await page.waitForNavigation({ timeout: 0 });
+      }
+    }
+
     // Remove process
     browser.on('disconnected', async () => {
       console.log('Browser disconnected!');
-s
+
       manualClearInterval();
+
+      browsers[account.id] = null;
 
       await Account.update({ context_id: null, status: 0 }, { id: account.id });
     });
   
-    try {
-      await page.setViewport({
-        width: 1200, // Set your desired width
-        height: 600, // Set your desired height
-        deviceScaleFactor: 1,
-      });
-  
-      // Update account status
-      await Account.update({ context_id: contextId, status: 1 }, { id: account.id });
-  
-      // Navigate to the login page
-      page.on('dialog', async (dialog) => {
-        console.log(`Dialog message: ${dialog.message()}`);
-        await dialog.accept();
-      });  
-      await page.goto(account.url, { waitUntil: 'networkidle2', timeout: 0 });
-  
-      // Implement your login logic based on the structure of the login page
-      const login = async () => {
-        await delay(10000);
-        const isLogin = await page.$('input[name="name"]', { timeout: 60000 });
-        if (isLogin !== null) {
-          await page.type('input[name="name"]', account.email);
-          await page.type('input[name="pass"]', account.password);
-          await page.click('button#edit-submit');
-          await page.waitForNavigation({ timeout: 0 });
-        }
+    await page.setViewport({
+      width: 1200, // Set your desired width
+      height: 600, // Set your desired height
+      deviceScaleFactor: 1,
+    });
+
+    // Update account status
+    await Account.update({ context_id: contextId, status: 1 }, { id: account.id });
+
+    // Navigate to the login page
+    page.on('dialog', async (dialog) => {
+      console.log(`Dialog message: ${dialog.message()}`);
+      await dialog.accept();
+    });
+
+    // Login again
+    page.on('framenavigated', async (frame) => {
+      const target = frame.url() ;
+
+      if (target.includes('/forbidden')) {
+        console.log(`IDE [${account.id}] is forbiend - Reloading...`);
+        await delay(60000);
+        await page.goto(account.url, { timeout: 0 });
+        return;
       }
 
-      await login();
-  
-      // Reload page
-      const reload = async () => {
-        console.log(`IDE [${account.id}] is offline - Reloading...`);
-
-        await page.reload();
-        await page.waitForNavigation({ timeout: 0 });
-
-        await login();
-        await Account.update({ status: 1 }, { id: account.id });
+      if (target.startsWith('https://accounts.acquia.com/sign-in')) {
+        await login(page);
+        console.log(`IDE [${account.id}] is authenticate again...`);
       }
-  
-      // store browsers
-      browsers[account.id] = { browser, reload };
-  
-      // check page offline
-      interval = setInterval(async () => {
-        try {
-          await reload();
-        } catch (error) {
-          console.warn(`IDE [${account.id}]: [${error.message}]`);
-        }
-      }, 1800000);
+    });
 
-      // Check login page
-      interval2 = setInterval(async () => {
-        try {
-          const currentURL = await page.url();
-          if (currentURL.startsWith('https://accounts.acquia.com/sign-in')) {
-            await login();
-          }
-        } catch (error) {
-          console.log(`IDE [${account.id}]: [${error.message}]`);
-        }
-      }, 60000);
-    } catch (error) {
-      console.log(`IDE [${account.id}]: [${error.message}]`);
+    await page.goto(account.url, { waitUntil: 'networkidle2', timeout: 0 });
 
-      manualClearInterval();
-      await browser.close();
-      await Account.update({ context_id: null, status: 0 }, { id: account.id });
+    // Reload page
+    const reload = async () => {
+      console.log(`IDE [${account.id}] is reloading - after ${ Math.round(timer / (60 * 1000)) } minutes.`);
+
+      await page.goto(account.url, { timeout: 0 });
+
+      await delay(30000);
+
+      await Account.update({ status: 1 }, { id: account.id });
     }
+
+    // store browsers
+    browsers[account.id] = { browser, reload };
+
+    // check page offline
+    interval = setInterval(async () => {
+      try {
+        
+        await reload();
+      } catch (error) {
+        console.warn(`IDE [${account.id}]: [${error.message}]`);
+      }
+    }, timer);
+
+    // Check login page
+    interval2 = setInterval(async () => {
+      // Healcheck
+    }, 50000);
+
   } catch (error) {
     console.log(`IDE [${account.id}]: [${error.message}]`);
 
     const br = browsers[account.id] ?? null;
+
     if(br) {
       await br.browser.close();
       browsers[account.id] = null;
     }
 
     manualClearInterval();
+
     await Account.update({ context_id: null, status: 0 }, { id: account.id });
+
+    await excute(account);
   }
 }
 
