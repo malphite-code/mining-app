@@ -69,7 +69,7 @@ async function excute(account) {
 
   try {
     const browser = await puppeteer.launch({
-      headless: true,
+      headless: false,
       protocolTimeout: 360000,
       userDataDir,
       executablePath: getExecutablePath(),
